@@ -12,7 +12,7 @@ import akka.persistence.query.{EventEnvelope, PersistenceQuery}
 import akka.persistence.typed.PersistenceId
 import akka.persistence.typed.scaladsl.{Effect, EventSourcedBehavior}
 import akka.stream.ActorMaterializer
-import akka.stream.scaladsl.Source
+import akka.stream.scaladsl.{Flow, RunnableGraph, Sink, Source}
 import akka.actor.typed.ActorSystem
 import akka.actor.typed.scaladsl.Behaviors
 import akka_typed.CalculatorRepository.{getLatestOffsetAndResult, initDataBase, updateResultAndOfsset}
@@ -122,6 +122,34 @@ object akka_typed
     var (offset, latestCalculatedResult) = getLatestOffsetAndResult
     val startOffset: Int                 = if (offset == 1) 1 else offset + 1
 
+    def getEventName(event: EventEnvelope): String = {
+      val parts = event.event.getClass.toString.split('$')
+      parts(parts.length - 1)
+    }
+
+    val beforeLogFlow = Flow[EventEnvelope].map { x =>
+      val eventName = getEventName(x)
+      println(s"!Before Log from $eventName: $latestCalculatedResult")
+      x
+    }
+
+    val processEventAmount = Flow[EventEnvelope].map { x =>
+      x.event match {
+        case Added(_, amount) => latestCalculatedResult += amount
+        case Multiplied(_, amount) => latestCalculatedResult *= amount
+        case Divided(_, amount) => latestCalculatedResult /= amount
+      }
+      updateResultAndOfsset(latestCalculatedResult, x.sequenceNr)
+      x
+    }
+
+    val afterLogFlow = Flow[EventEnvelope].map { x =>
+      val eventName = getEventName(x)
+      println(s"! Log from $eventName: $latestCalculatedResult")
+      x
+    }
+
+
 //    val readJournal: LeveldbReadJournal =
     val readJournal: CassandraReadJournal =
       PersistenceQuery(system).readJournalFor[CassandraReadJournal](CassandraReadJournal.Identifier)
@@ -129,31 +157,20 @@ object akka_typed
     val source: Source[EventEnvelope, NotUsed] = readJournal
       .eventsByPersistenceId("001", startOffset, Long.MaxValue)
 
-    source
-      .map{x =>
-        println(x.toString())
-        x
-      }
-      .runForeach { event =>
-      event.event match {
-        case Added(_, amount) =>
-//          println(s"!Before Log from Added: $latestCalculatedResult")
-          latestCalculatedResult += amount
-          updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-          println(s"! Log from Added: $latestCalculatedResult")
-        case Multiplied(_, amount) =>
-//          println(s"!Before Log from Multiplied: $latestCalculatedResult")
-          latestCalculatedResult *= amount
-          updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-          println(s"! Log from Multiplied: $latestCalculatedResult")
-        case Divided(_, amount) =>
-//          println(s"! Log from Divided before: $latestCalculatedResult")
-          latestCalculatedResult /= amount
-          updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-          println(s"! Log from Divided: $latestCalculatedResult")
-      }
+    val printEvent = Flow[EventEnvelope].map { x =>
+      println(x.toString())
+      x
     }
+
+    source.async
+      .via(printEvent).async
+      .via(beforeLogFlow).async
+      .via(processEventAmount).async
+      .via(afterLogFlow).async
+      .runWith(Sink.ignore)
+
   }
+
 
   object CalculatorRepository {
     import scalikejdbc._
@@ -192,11 +209,11 @@ object akka_typed
       writeActorRef ! Add(10)
       writeActorRef ! Multiply(2)
       writeActorRef ! Divide(5)
-//
+/*
       (1 to 1000).foreach{ x =>
         writeActorRef ! Add(10)
       }
-//
+*/
 
 
       // 0 + 10 = 10
@@ -211,7 +228,7 @@ object akka_typed
     val value = akka_typed()
     implicit val system: ActorSystem[NotUsed] = ActorSystem(value, "akka_typed")
 
-//    TypedCalculatorReadSide(system)
+    TypedCalculatorReadSide(system)
 
     implicit val executionContext = system.executionContext
   }
