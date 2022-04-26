@@ -15,6 +15,7 @@ import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Flow, RunnableGraph, Sink, Source}
 import akka.actor.typed.ActorSystem
 import akka.actor.typed.scaladsl.Behaviors
+import akka.stream.alpakka.slick.scaladsl.SlickSession
 import akka_typed.CalculatorRepository.{getLatestOffsetAndResult, initDataBase, updateResultAndOfsset}
 import akka_typed.TypedCalculatorWriteSide.{Add, Added, Command, Divide, Divided, Multiplied, Multiply}
 
@@ -117,6 +118,9 @@ object akka_typed
 
   case class TypedCalculatorReadSide(system: ActorSystem[NotUsed]) {
     initDataBase
+
+    implicit val session = SlickSession.forConfig("slick-postgres")
+    //system.registerOnTermination(session.close())
 
     implicit val materializer            = system.classicSystem
     var (offset, latestCalculatedResult) = getLatestOffsetAndResult
