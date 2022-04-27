@@ -22,7 +22,9 @@ import akka_typed.TypedCalculatorWriteSide.{Add, Added, Command, Divide, Divided
 import scala.concurrent.duration._
 import scala.io.StdIn
 import scala.util.{Failure, Success}
+import slick.jdbc.H2Profile.api._
 
+import scala.concurrent.Await
 
 
 case class Action(value: Int, name: String)
@@ -152,6 +154,12 @@ object akka_typed
       x
     }
 
+    val updateDbSlick = Flow[EventEnvelope].map { x =>
+      val query = sqlu"update public.result set calculated_value = $latestCalculatedResult, write_side_offset = ${x.sequenceNr} where id = 1"
+      val result = Await.result (session.db.run(query), Duration.Inf)
+      x
+    }
+
     val afterLogFlow = Flow[EventEnvelope].map { x =>
       val eventName = getEventName(x)
       println(s"! Log from $eventName: $latestCalculatedResult")
@@ -175,7 +183,7 @@ object akka_typed
       .via(printEvent)
       .via(beforeLogFlow)
       .via(processEventAmount)
-      .via(updateDb)
+      .via(updateDbSlick)
       .via(afterLogFlow)
       .runWith(Sink.ignore)
 
