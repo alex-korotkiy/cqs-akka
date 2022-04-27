@@ -120,7 +120,6 @@ object akka_typed
   }
 
   case class TypedCalculatorReadSide(system: ActorSystem[NotUsed]) {
-    //initDataBase
 
     implicit val session = SlickSession.forConfig("slick-postgres")
 
@@ -148,14 +147,6 @@ object akka_typed
       }
       x
     }
-
-    /*
-    val updateDb = Flow[EventEnvelope].map { x =>
-      updateResultAndOfsset(latestCalculatedResult, x.sequenceNr)
-      x
-    }
-
-     */
 
     val updateResult = Flow[EventEnvelope].map { x =>
       val query = sqlu"update public.result set calculated_value = $latestCalculatedResult, write_side_offset = ${x.sequenceNr} where id = 1"
@@ -195,37 +186,6 @@ object akka_typed
   object SqlExecution {
     def runQuery[T](query: DBIOAction[T, NoStream, Nothing])(implicit session: SlickSession): T = Await.result(session.db.run(query), Duration.Inf)
   }
-
-  /*
-  object CalculatorRepository {
-    import scalikejdbc._
-
-    def initDataBase: Unit = {
-      Class.forName("org.postgresql.Driver")
-      val poolSettings = ConnectionPoolSettings(initialSize = 10, maxSize = 100)
-
-      ConnectionPool.singleton("jdbc:postgresql://localhost:5432/demo", "docker", "docker", poolSettings)
-    }
-
-    def getLatestOffsetAndResult: (Int, Double) = {
-      val entities =
-        DB readOnly { session =>
-          session.list("select * from public.result where id = 1;") {
-            row => (row.int("write_side_offset"), row.double("calculated_value")) }
-        }
-      entities.head
-    }
-
-    def updateResultAndOfsset(calculated: Double, offset: Long): Unit = {
-      using(DB(ConnectionPool.borrow())) { db =>
-        db.autoClose(true)
-        db.localTx {
-          _.update("update public.result set calculated_value = ?, write_side_offset = ? where id = ?", calculated, offset, 1)
-        }
-      }
-    }
-  }
-*/
 
   def apply(): Behavior[NotUsed] =
     Behaviors.setup { ctx =>
