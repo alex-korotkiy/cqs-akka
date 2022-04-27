@@ -17,6 +17,7 @@ import akka.actor.typed.ActorSystem
 import akka.actor.typed.scaladsl.Behaviors
 import akka.stream.alpakka.slick.scaladsl.SlickSession
 import akka_typed.CalculatorRepository.{getLatestOffsetAndResult, initDataBase, updateResultAndOfsset}
+import akka_typed.SqlExecution.runQuery
 import akka_typed.TypedCalculatorWriteSide.{Add, Added, Command, Divide, Divided, Multiplied, Multiply}
 
 import scala.concurrent.duration._
@@ -126,7 +127,8 @@ object akka_typed
 
     implicit val materializer            = system.classicSystem
     materializer.registerOnTermination(() => session.close())
-    var (offset, latestCalculatedResult) = getLatestOffsetAndResult
+    //var (offset, latestCalculatedResult) = getLatestOffsetAndResult
+    var (offset, latestCalculatedResult) = runQuery(sql"select * from public.result where id = 1".as[(Int, Double)]).head
     val startOffset: Int                 = if (offset == 1) 1 else offset + 1
 
     def getEventName(event: EventEnvelope): String = {
@@ -156,7 +158,7 @@ object akka_typed
 
     val updateDbSlick = Flow[EventEnvelope].map { x =>
       val query = sqlu"update public.result set calculated_value = $latestCalculatedResult, write_side_offset = ${x.sequenceNr} where id = 1"
-      val result = Await.result (session.db.run(query), Duration.Inf)
+      runQuery(query)
       x
     }
 
@@ -189,6 +191,9 @@ object akka_typed
 
   }
 
+  object SqlExecution {
+    def runQuery[T](query: DBIOAction[T, NoStream, Nothing])(implicit session: SlickSession): T = Await.result(session.db.run(query), Duration.Inf)
+  }
 
   object CalculatorRepository {
     import scalikejdbc._
