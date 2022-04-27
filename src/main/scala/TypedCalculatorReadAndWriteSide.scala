@@ -12,16 +12,20 @@ import akka.persistence.query.{EventEnvelope, PersistenceQuery}
 import akka.persistence.typed.PersistenceId
 import akka.persistence.typed.scaladsl.{Effect, EventSourcedBehavior}
 import akka.stream.ActorMaterializer
-import akka.stream.scaladsl.Source
+import akka.stream.scaladsl.{Flow, RunnableGraph, Sink, Source}
 import akka.actor.typed.ActorSystem
 import akka.actor.typed.scaladsl.Behaviors
-import akka_typed.CalculatorRepository.{getLatestOffsetAndResult, initDataBase, updateResultAndOfsset}
+import akka.stream.alpakka.slick.scaladsl.SlickSession
+//import akka_typed.CalculatorRepository.{getLatestOffsetAndResult, initDataBase, updateResultAndOfsset}
+import akka_typed.SqlExecution.runQuery
 import akka_typed.TypedCalculatorWriteSide.{Add, Added, Command, Divide, Divided, Multiplied, Multiply}
 
 import scala.concurrent.duration._
 import scala.io.StdIn
 import scala.util.{Failure, Success}
+import slick.jdbc.H2Profile.api._
 
+import scala.concurrent.Await
 
 
 case class Action(value: Int, name: String)
@@ -116,11 +120,46 @@ object akka_typed
   }
 
   case class TypedCalculatorReadSide(system: ActorSystem[NotUsed]) {
-    initDataBase
+
+    implicit val session = SlickSession.forConfig("slick-postgres")
 
     implicit val materializer            = system.classicSystem
-    var (offset, latestCalculatedResult) = getLatestOffsetAndResult
+    materializer.registerOnTermination(() => session.close())
+    var (offset, latestCalculatedResult) = runQuery(sql"select * from public.result where id = 1".as[(Int, Double)]).head
     val startOffset: Int                 = if (offset == 1) 1 else offset + 1
+
+    def getEventName(event: EventEnvelope): String = {
+      val parts = event.event.getClass.toString.split('$')
+      parts(parts.length - 1)
+    }
+
+    val beforeLogFlow = Flow[EventEnvelope].map { x =>
+      val eventName = getEventName(x)
+      println(s"!Before Log from $eventName: $latestCalculatedResult")
+      x
+    }
+
+    val processEventAmount = Flow[EventEnvelope].map { x =>
+      x.event match {
+        case Added(_, amount) => latestCalculatedResult += amount
+        case Multiplied(_, amount) => latestCalculatedResult *= amount
+        case Divided(_, amount) => latestCalculatedResult /= amount
+      }
+      x
+    }
+
+    val updateResult = Flow[EventEnvelope].map { x =>
+      val query = sqlu"update public.result set calculated_value = $latestCalculatedResult, write_side_offset = ${x.sequenceNr} where id = 1"
+      runQuery(query)
+      x
+    }
+
+    val afterLogFlow = Flow[EventEnvelope].map { x =>
+      val eventName = getEventName(x)
+      println(s"! Log from $eventName: $latestCalculatedResult")
+      x
+    }
+
 
 //    val readJournal: LeveldbReadJournal =
     val readJournal: CassandraReadJournal =
@@ -129,61 +168,24 @@ object akka_typed
     val source: Source[EventEnvelope, NotUsed] = readJournal
       .eventsByPersistenceId("001", startOffset, Long.MaxValue)
 
-    source
-      .map{x =>
-        println(x.toString())
-        x
-      }
-      .runForeach { event =>
-      event.event match {
-        case Added(_, amount) =>
-//          println(s"!Before Log from Added: $latestCalculatedResult")
-          latestCalculatedResult += amount
-          updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-          println(s"! Log from Added: $latestCalculatedResult")
-        case Multiplied(_, amount) =>
-//          println(s"!Before Log from Multiplied: $latestCalculatedResult")
-          latestCalculatedResult *= amount
-          updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-          println(s"! Log from Multiplied: $latestCalculatedResult")
-        case Divided(_, amount) =>
-//          println(s"! Log from Divided before: $latestCalculatedResult")
-          latestCalculatedResult /= amount
-          updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-          println(s"! Log from Divided: $latestCalculatedResult")
-      }
+    val printEvent = Flow[EventEnvelope].map { x =>
+      println(x.toString())
+      x
     }
+
+    source.async
+      .via(printEvent).async
+      .via(beforeLogFlow).async
+      .via(processEventAmount).async
+      .via(updateResult).async
+      .via(afterLogFlow).async
+      .runWith(Sink.ignore)
+
   }
 
-  object CalculatorRepository {
-    import scalikejdbc._
-
-    def initDataBase: Unit = {
-      Class.forName("org.postgresql.Driver")
-      val poolSettings = ConnectionPoolSettings(initialSize = 10, maxSize = 100)
-
-      ConnectionPool.singleton("jdbc:postgresql://localhost:5432/demo", "docker", "docker", poolSettings)
-    }
-
-    def getLatestOffsetAndResult: (Int, Double) = {
-      val entities =
-        DB readOnly { session =>
-          session.list("select * from public.result where id = 1;") {
-            row => (row.int("write_side_offset"), row.double("calculated_value")) }
-        }
-      entities.head
-    }
-
-    def updateResultAndOfsset(calculated: Double, offset: Long): Unit = {
-      using(DB(ConnectionPool.borrow())) { db =>
-        db.autoClose(true)
-        db.localTx {
-          _.update("update public.result set calculated_value = ?, write_side_offset = ? where id = ?", calculated, offset, 1)
-        }
-      }
-    }
+  object SqlExecution {
+    def runQuery[T](query: DBIOAction[T, NoStream, Nothing])(implicit session: SlickSession): T = Await.result(session.db.run(query), Duration.Inf)
   }
-
 
   def apply(): Behavior[NotUsed] =
     Behaviors.setup { ctx =>
@@ -192,11 +194,11 @@ object akka_typed
       writeActorRef ! Add(10)
       writeActorRef ! Multiply(2)
       writeActorRef ! Divide(5)
-//
+/*
       (1 to 1000).foreach{ x =>
         writeActorRef ! Add(10)
       }
-//
+*/
 
 
       // 0 + 10 = 10
@@ -211,7 +213,7 @@ object akka_typed
     val value = akka_typed()
     implicit val system: ActorSystem[NotUsed] = ActorSystem(value, "akka_typed")
 
-//    TypedCalculatorReadSide(system)
+    TypedCalculatorReadSide(system)
 
     implicit val executionContext = system.executionContext
   }
