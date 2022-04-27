@@ -16,7 +16,7 @@ import akka.stream.scaladsl.{Flow, RunnableGraph, Sink, Source}
 import akka.actor.typed.ActorSystem
 import akka.actor.typed.scaladsl.Behaviors
 import akka.stream.alpakka.slick.scaladsl.SlickSession
-import akka_typed.CalculatorRepository.{getLatestOffsetAndResult, initDataBase, updateResultAndOfsset}
+//import akka_typed.CalculatorRepository.{getLatestOffsetAndResult, initDataBase, updateResultAndOfsset}
 import akka_typed.SqlExecution.runQuery
 import akka_typed.TypedCalculatorWriteSide.{Add, Added, Command, Divide, Divided, Multiplied, Multiply}
 
@@ -120,14 +120,12 @@ object akka_typed
   }
 
   case class TypedCalculatorReadSide(system: ActorSystem[NotUsed]) {
-    initDataBase
+    //initDataBase
 
     implicit val session = SlickSession.forConfig("slick-postgres")
-    //system.registerOnTermination(session.close())
 
     implicit val materializer            = system.classicSystem
     materializer.registerOnTermination(() => session.close())
-    //var (offset, latestCalculatedResult) = getLatestOffsetAndResult
     var (offset, latestCalculatedResult) = runQuery(sql"select * from public.result where id = 1".as[(Int, Double)]).head
     val startOffset: Int                 = if (offset == 1) 1 else offset + 1
 
@@ -151,12 +149,15 @@ object akka_typed
       x
     }
 
+    /*
     val updateDb = Flow[EventEnvelope].map { x =>
       updateResultAndOfsset(latestCalculatedResult, x.sequenceNr)
       x
     }
 
-    val updateDbSlick = Flow[EventEnvelope].map { x =>
+     */
+
+    val updateResult = Flow[EventEnvelope].map { x =>
       val query = sqlu"update public.result set calculated_value = $latestCalculatedResult, write_side_offset = ${x.sequenceNr} where id = 1"
       runQuery(query)
       x
@@ -185,7 +186,7 @@ object akka_typed
       .via(printEvent)
       .via(beforeLogFlow)
       .via(processEventAmount)
-      .via(updateDbSlick)
+      .via(updateResult)
       .via(afterLogFlow)
       .runWith(Sink.ignore)
 
@@ -195,6 +196,7 @@ object akka_typed
     def runQuery[T](query: DBIOAction[T, NoStream, Nothing])(implicit session: SlickSession): T = Await.result(session.db.run(query), Duration.Inf)
   }
 
+  /*
   object CalculatorRepository {
     import scalikejdbc._
 
@@ -223,7 +225,7 @@ object akka_typed
       }
     }
   }
-
+*/
 
   def apply(): Behavior[NotUsed] =
     Behaviors.setup { ctx =>
