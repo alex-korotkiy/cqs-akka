@@ -173,12 +173,12 @@ object akka_typed
       x
     }
 
-    source
-      .via(printEvent)
-      .via(beforeLogFlow)
-      .via(processEventAmount)
-      .via(updateResult)
-      .via(afterLogFlow)
+    source.async
+      .via(printEvent).async
+      .via(beforeLogFlow).async
+      .via(processEventAmount).async
+      .via(updateResult).async
+      .via(afterLogFlow).async
       .runWith(Sink.ignore)
 
   }
