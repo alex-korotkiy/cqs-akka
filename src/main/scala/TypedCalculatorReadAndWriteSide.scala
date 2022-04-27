@@ -123,6 +123,7 @@ object akka_typed
     //system.registerOnTermination(session.close())
 
     implicit val materializer            = system.classicSystem
+    materializer.registerOnTermination(() => session.close())
     var (offset, latestCalculatedResult) = getLatestOffsetAndResult
     val startOffset: Int                 = if (offset == 1) 1 else offset + 1
 
@@ -143,6 +144,10 @@ object akka_typed
         case Multiplied(_, amount) => latestCalculatedResult *= amount
         case Divided(_, amount) => latestCalculatedResult /= amount
       }
+      x
+    }
+
+    val updateDb = Flow[EventEnvelope].map { x =>
       updateResultAndOfsset(latestCalculatedResult, x.sequenceNr)
       x
     }
@@ -166,11 +171,12 @@ object akka_typed
       x
     }
 
-    source.async
-      .via(printEvent).async
-      .via(beforeLogFlow).async
-      .via(processEventAmount).async
-      .via(afterLogFlow).async
+    source
+      .via(printEvent)
+      .via(beforeLogFlow)
+      .via(processEventAmount)
+      .via(updateDb)
+      .via(afterLogFlow)
       .runWith(Sink.ignore)
 
   }
